@@ -1,7 +1,7 @@
 interface HtmlParser exposes [parse] imports []
 
 Node : [
-    Doctype Str,
+    DoctypeHtml,
     Element Str (List Attribute) (List Node),
     Comment Str,
     Text Str,
@@ -124,8 +124,35 @@ parseComment = \afterOpen ->
     next afterOpen (List.withCapacity 128)
 
 parseDocType : State -> Result (Node, State) _
-parseDocType = \_ ->
-    crash "todo"
+parseDocType = \state ->
+    word state ['d', 'o', 'c', 't', 'y', 'p', 'e'] 
+    |> Result.try oneOrMoreSpaces
+    |> Result.try \afterDoctype -> word afterDoctype ['h', 't', 'm', 'l'] 
+    |> Result.map ignoreSpaces
+    |> Result.try \afterHtml -> symbol afterHtml '>' 
+    |> Result.map \afterGt -> (DoctypeHtml, afterGt)
+
+# Helpers
+
+word : State, List U8 -> Result State _
+word = \initState, expected ->
+    next = \state, remaining ->
+        when remaining is
+            [] ->
+                Ok state
+
+            [head, .. as rest] ->
+                when nextChar state is
+                    Next (curr, newState) -> 
+                        if toLowerAsciiByte curr == toLowerAsciiByte head then
+                            next newState rest
+                        else
+                            Err (ExpectedWord expected curr)
+
+                    End ->
+                        Err (EndedButExpectedWord expected)
+
+    next initState expected
 
 symbol : State, U8 -> Result State _
 symbol = \state, expected ->
@@ -157,10 +184,24 @@ zeroOrMore = \initState, parser ->
     # TODO: What is a good initial capacity?
     next initState (List.withCapacity 4)
 
+
 ignoreSpaces : State -> State
 ignoreSpaces = \state ->
-    (_, after) = chompWhile state isBlank
-    after
+    when nextChar state is
+        Next (char, newState) if isBlank char ->
+            ignoreSpaces newState
+
+        Next _ | End ->
+            state
+
+oneOrMoreSpaces : State -> Result State [ExpectedSpace]
+oneOrMoreSpaces = \state ->
+    when nextChar state is
+        Next (char, newState) if isBlank char ->
+            Ok (ignoreSpaces newState)
+
+        Next _ | End ->
+            Err ExpectedSpace
 
 chompWhile : State, (U8 -> Bool) -> (Str, State)
 chompWhile = \initState, predicate ->
@@ -203,17 +244,28 @@ nextChar = \state ->
 isName : U8 -> Bool
 isName = \char -> isAsciiAlpha char || char == '-' || char == '_' || char == '.'
 
-isAsciiAlpha : U8 -> Bool
-isAsciiAlpha = \char -> (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
-
 isBlank : U8 -> Bool
 isBlank = \char -> char == ' ' || char == '\t' || isNewLine char
 
 isNewLine : U8 -> Bool
 isNewLine = \char -> char == '\n'
 
-# Tests
+isAsciiAlpha : U8 -> Bool
+isAsciiAlpha = \char -> (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
 
+toLowerAsciiByte : U8 -> U8
+toLowerAsciiByte = \char ->
+    if char >= 'A' && char <= 'Z' then
+        char + 32
+    else
+        char
+
+expect toLowerAsciiByte 'A' == 'a'
+expect toLowerAsciiByte 'Z' == 'z'
+expect toLowerAsciiByte 'a' == 'a'
+expect toLowerAsciiByte 'z' == 'z'
+
+# Parse Tests
 
 # Tags
 expect parse "<p></p>" == Ok [Element "p" [] []]
@@ -237,3 +289,14 @@ expect parse "<!-- 8 > 5 -->" == Ok [Comment " 8 > 5 "]
 expect parse "<!-- - - > -->" == Ok [Comment " - - > "]
 expect parse "<!-- -- > -->" == Ok [Comment " -- > "]
 expect parse "<!-- before -- after -->" == Ok [Comment " before -- after "]
+
+
+# Doctype
+expect parse "<!doctype html>" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE html>" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE HTML>" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE html >" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE  html>" == Ok [DoctypeHtml]
+expect parse "<! DOCTYPE html>" == Err (ExpectedWord ['d', 'o', 'c', 't', 'y', 'p', 'e'] ' ')
+expect parse "<!DOCTYPE xml>" == Err (ExpectedWord ['h', 't', 'm', 'l'] 'x')
+expect parse "<!doctypehtml>" == Err ExpectedSpace
