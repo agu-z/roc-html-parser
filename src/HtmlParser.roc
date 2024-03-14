@@ -19,34 +19,32 @@ State : {
 
 parse : Str -> Result (List Node) _
 parse = \input ->
-    init = {
+    {
         input: Str.toUtf8 input,
         line: 1,
         column: 0,
     }
-
-    # TODO: Parse many nodes
-    parseNode init |> Result.map \(node, _) -> [node]
+    |> ignoreSpaces
+    |> parseNode # TODO: Parse many nodes
+    |> Result.map \(node, _) -> [node]
 
 parseNode : State -> Result (Node, State) _
 parseNode = \state ->
-    when nextChar state is
-        End ->
-            Err End
+    when symbol state '<' is
+        Ok afterLt ->
+            parseNonText afterLt
 
-        Next ('<', rest) ->
-            parseElement rest
+        Err _ ->
+            (text, afterText) = chompWhile state \char -> char != '<'
 
-        _ ->
-            crash "todo"
+            Ok (Text text, afterText)
 
-parseElement : State -> Result (Node, State) _
-parseElement = \rest ->
-    (name, afterName) = chompWhile rest isName
+parseNonText : State -> Result (Node, State) _
+parseNonText = \afterLt ->
+    (name, afterName) = chompWhile afterLt isName
 
     if Str.isEmpty name then
-        # TODO: Parse comment, doctype, text
-        crash "todo"
+        parseCommentOrDocType afterLt
     else
         (attributes, afterAttributes) = zeroOrMore afterName parseAttribute
 
@@ -58,8 +56,7 @@ parseElement = \rest ->
         # TODO: content
         (content, afterContent) = ([], afterGt)
 
-        afterCloseLt <- symbol afterContent '<' |> Result.try
-        afterCloseSlash <- symbol afterCloseLt '/' |> Result.try
+        afterCloseSlash <- symbol2 afterContent '<' '/' |> Result.try
         (closingName, afterClosingName) = chompWhile afterCloseSlash isName
         afterCloseGt <- symbol afterClosingName '>' |> Result.try
 
@@ -97,6 +94,39 @@ parseAttribute = \state ->
             Err _ ->
                 Ok ((name, ""), afterSpaces1)
 
+parseCommentOrDocType : State -> Result (Node, State) _
+parseCommentOrDocType = \afterLt ->
+    afterExclamation <- symbol afterLt '!' |> Result.try
+
+    when symbol2 afterExclamation '-' '-' is
+        Ok afterStart ->
+            parseComment afterStart
+
+        Err _ ->
+            parseDocType afterExclamation
+
+parseComment : State -> Result (Node, State) _
+parseComment = \afterOpen ->
+    next = \state, acc ->
+        when nextChar state is
+            Next (char, newState) ->
+                if char == '>' && List.endsWith acc ['-', '-'] then
+                    acc
+                    |> List.dropLast 2
+                    |> Str.fromUtf8
+                    |> Result.map \comment -> (Comment comment, newState)
+                else
+                    next newState (List.append acc char)
+
+            End ->
+                Err (EndedButExpected '-')
+
+    next afterOpen (List.withCapacity 128)
+
+parseDocType : State -> Result (Node, State) _
+parseDocType = \_ ->
+    crash "todo"
+
 symbol : State, U8 -> Result State _
 symbol = \state, expected ->
     when nextChar state is
@@ -108,6 +138,11 @@ symbol = \state, expected ->
 
         End ->
             Err (EndedButExpected expected)
+
+symbol2 : State, U8, U8 -> Result State _
+symbol2 = \state, expected1, expected2 ->
+    afterExpected1 <- symbol state expected1 |> Result.try
+    symbol afterExpected1 expected2
 
 zeroOrMore : State, (State -> Result (a, State) err) -> (List a, State)
 zeroOrMore = \initState, parser ->
@@ -179,17 +214,26 @@ isNewLine = \char -> char == '\n'
 
 # Tests
 
+
+# Tags
 expect parse "<p></p>" == Ok [Element "p" [] []]
 expect parse "<p ></p>" == Ok [Element "p" [] []]
+
+# Attributes
 expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
 expect parse "<p id = \"name\"  class= \"name\"></p>" == Ok [Element "p" [("id", "name"), ("class", "name")] []]
-
-## Attribute values without quotes
 expect parse "<p id=name></p>" == Ok [Element "p" [("id", "name")] []]
-
-## Attribute without value
 expect parse "<button disabled></button>" == Ok [Element "button" [("disabled", "")] []]
 
+# Mismatched tags
 expect parse "<p></ul>" == Err (MismatchedTag "p" "ul")
 expect parse "<input" == Err (EndedButExpected '>')
 expect parse "<p>" == Err (EndedButExpected '<')
+
+# Comments
+expect parse "<!---->" == Ok [Comment ""]
+expect parse "<!-- comment -->" == Ok [Comment " comment "]
+expect parse "<!-- 8 > 5 -->" == Ok [Comment " 8 > 5 "]
+expect parse "<!-- - - > -->" == Ok [Comment " - - > "]
+expect parse "<!-- -- > -->" == Ok [Comment " -- > "]
+expect parse "<!-- before -- after -->" == Ok [Comment " before -- after "]
