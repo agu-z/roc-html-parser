@@ -35,7 +35,7 @@ parseNode = \state ->
             parseNonText afterLt
 
         Err _ ->
-            (text, afterText) = chompWhile state \char -> char != '<'
+            (text, afterText) = chompWhile state \byte -> byte != '<'
 
             Ok (Text text, afterText)
 
@@ -80,14 +80,14 @@ parseAttribute = \state ->
 
                 when symbol afterSpaces2 '"' is
                     Ok afterQuote1 ->
-                        (value, afterValue) = chompWhile afterQuote1 \char -> char != '"'
+                        (value, afterValue) = chompWhile afterQuote1 \byte -> byte != '"'
 
                         symbol afterValue '"'
                         |> Result.map \afterQuote2 ->
                             ((name, value), afterQuote2)
 
                     Err _ ->
-                        (value, afterValue) = chompWhile afterSpaces2 \char -> char != ' ' && char != '>'
+                        (value, afterValue) = chompWhile afterSpaces2 \byte -> byte != ' ' && byte != '>'
 
                         Ok ((name, value), afterValue)
 
@@ -108,15 +108,15 @@ parseCommentOrDocType = \afterLt ->
 parseComment : State -> Result (Node, State) _
 parseComment = \afterOpen ->
     next = \state, acc ->
-        when nextChar state is
-            Next (char, newState) ->
-                if char == '>' && List.endsWith acc ['-', '-'] then
+        when nextByte state is
+            Next (byte, newState) ->
+                if byte == '>' && List.endsWith acc ['-', '-'] then
                     acc
                     |> List.dropLast 2
                     |> Str.fromUtf8
                     |> Result.map \comment -> (Comment comment, newState)
                 else
-                    next newState (List.append acc char)
+                    next newState (List.append acc byte)
 
             End ->
                 Err (EndedButExpected '-')
@@ -142,7 +142,7 @@ word = \initState, expected ->
                 Ok state
 
             [head, .. as rest] ->
-                when nextChar state is
+                when nextByte state is
                     Next (curr, newState) -> 
                         if toLowerAsciiByte curr == toLowerAsciiByte head then
                             next newState rest
@@ -156,12 +156,12 @@ word = \initState, expected ->
 
 symbol : State, U8 -> Result State _
 symbol = \state, expected ->
-    when nextChar state is
-        Next (char, rest) if char == expected ->
+    when nextByte state is
+        Next (byte, rest) if byte == expected ->
             Ok rest
 
-        Next (char, _) ->
-            Err (Expected expected char)
+        Next (byte, _) ->
+            Err (Expected expected byte)
 
         End ->
             Err (EndedButExpected expected)
@@ -187,8 +187,8 @@ zeroOrMore = \initState, parser ->
 
 ignoreSpaces : State -> State
 ignoreSpaces = \state ->
-    when nextChar state is
-        Next (char, newState) if isBlank char ->
+    when nextByte state is
+        Next (byte, newState) if isBlank byte ->
             ignoreSpaces newState
 
         Next _ | End ->
@@ -196,8 +196,8 @@ ignoreSpaces = \state ->
 
 oneOrMoreSpaces : State -> Result State [ExpectedSpace]
 oneOrMoreSpaces = \state ->
-    when nextChar state is
-        Next (char, newState) if isBlank char ->
+    when nextByte state is
+        Next (byte, newState) if isBlank byte ->
             Ok (ignoreSpaces newState)
 
         Next _ | End ->
@@ -206,9 +206,9 @@ oneOrMoreSpaces = \state ->
 chompWhile : State, (U8 -> Bool) -> (Str, State)
 chompWhile = \initState, predicate ->
     next = \state, acc ->
-        when nextChar state is
-            Next (char, newState) if predicate char ->
-                next newState (List.append acc char)
+        when nextByte state is
+            Next (byte, newState) if predicate byte ->
+                next newState (List.append acc byte)
 
             Next _ | End ->
                 (
@@ -218,15 +218,15 @@ chompWhile = \initState, predicate ->
 
     next initState []
 
-nextChar : State -> [Next (U8, State), End]
-nextChar = \state ->
+nextByte : State -> [Next (U8, State), End]
+nextByte = \state ->
     when state.input is
         [] ->
             End
 
-        [char, .. as rest] ->
+        [byte, .. as rest] ->
             newState =
-                if char == '\n' then
+                if byte == '\n' then
                     {
                         input: rest,
                         line: state.line + 1,
@@ -239,26 +239,26 @@ nextChar = \state ->
                         column: state.column + 1,
                     }
 
-            Next (char, newState)
+            Next (byte, newState)
 
 isName : U8 -> Bool
-isName = \char -> isAsciiAlpha char || char == '-' || char == '_' || char == '.'
+isName = \byte -> isAsciiAlpha byte || byte == '-' || byte == '_' || byte == '.'
 
 isBlank : U8 -> Bool
-isBlank = \char -> char == ' ' || char == '\t' || isNewLine char
+isBlank = \byte -> byte == ' ' || byte == '\t' || isNewLine byte
 
 isNewLine : U8 -> Bool
-isNewLine = \char -> char == '\n'
+isNewLine = \byte -> byte == '\n'
 
 isAsciiAlpha : U8 -> Bool
-isAsciiAlpha = \char -> (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+isAsciiAlpha = \byte -> (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
 
 toLowerAsciiByte : U8 -> U8
-toLowerAsciiByte = \char ->
-    if char >= 'A' && char <= 'Z' then
-        char + 32
+toLowerAsciiByte = \byte ->
+    if byte >= 'A' && byte <= 'Z' then
+        byte + 32
     else
-        char
+        byte
 
 expect toLowerAsciiByte 'A' == 'a'
 expect toLowerAsciiByte 'Z' == 'z'
