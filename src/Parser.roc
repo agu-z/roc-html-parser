@@ -34,7 +34,7 @@ parseNonText = \afterLt ->
         parseCommentOrDocType afterLt
     else
         # 13.1.2.1 Start tags
-        (attributes, afterAttributes) = zeroOrMore afterName parseAttribute
+        (attributes, afterAttributes) = spaceSeparated afterName parseAttribute
 
         afterGt <-
             ignoreSpaces afterAttributes
@@ -170,6 +170,7 @@ expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
 expect parse "<p id = \"name\"  class= \"name\"></p>" == Ok [Element "p" [("id", "name"), ("class", "name")] []]
 expect parse "<p id=name></p>" == Ok [Element "p" [("id", "name")] []]
 expect parse "<button disabled></button>" == Ok [Element "button" [("disabled", "")] []]
+expect parse "<p id=\"name\"class=\"name\">" == Err (Expected '>' 'c')
 
 # Mismatched tags
 expect parse "<p></ul>" == Err (MismatchedTag "p" "ul")
@@ -262,12 +263,12 @@ symbol2 = \state, expected1, expected2 ->
     afterExpected1 <- symbol state expected1 |> Result.try
     symbol afterExpected1 expected2
 
-zeroOrMore : State, (State -> Result (a, State) err) -> (List a, State)
-zeroOrMore = \initState, parser ->
+spaceSeparated : State, (State -> Result (a, State) [ExpectedSpace]err) -> (List a, State)
+spaceSeparated = \initState, parser ->
     next = \state, acc ->
-        when parser (ignoreSpaces state) is
+        when state |> oneOrMoreSpaces |> Result.try parser is
             Ok (value, newState) ->
-                next (ignoreSpaces newState) (List.append acc value)
+                next newState (List.append acc value)
 
             Err _ ->
                 (acc, state)
