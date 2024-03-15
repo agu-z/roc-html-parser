@@ -167,6 +167,7 @@ expect parse "<h1></h1>" == Ok [Element "h1" [] []]
 
 # Attributes
 expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
+expect parse "<p id=\"name\" ></p>" == Ok [Element "p" [("id", "name")] []]
 expect parse "<p id = \"name\"  class= \"name\"></p>" == Ok [Element "p" [("id", "name"), ("class", "name")] []]
 expect parse "<p id=name></p>" == Ok [Element "p" [("id", "name")] []]
 expect parse "<button disabled></button>" == Ok [Element "button" [("disabled", "")] []]
