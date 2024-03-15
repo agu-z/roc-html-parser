@@ -33,6 +33,7 @@ parseNonText = \afterLt ->
     if Str.isEmpty name then
         parseCommentOrDocType afterLt
     else
+        # 13.1.2.1 Start tags
         (attributes, afterAttributes) = zeroOrMore afterName parseAttribute
 
         afterGt <-
@@ -43,15 +44,23 @@ parseNonText = \afterLt ->
         # TODO: content
         (content, afterContent) = ([], afterGt)
 
-        afterEndSlash <- symbol2 afterContent '<' '/' |> Result.try
-        (endName, afterEndName) = chompWhile afterEndSlash isName
-        afterEndNameSpaces = ignoreSpaces afterEndName
-        afterEndGt <- symbol afterEndNameSpaces '>' |> Result.try
+        (endName, afterEnd) <- parseEndTag afterContent |> Result.try
 
         if name == endName then
-            Ok (Element name attributes content, afterEndGt)
+            Ok (Element name attributes content, afterEnd)
         else
             Err (MismatchedTag name endName)
+
+# 13.1.2.2 End Tags
+parseEndTag : State -> Result (Str, State) _
+parseEndTag = \state ->
+    afterEndSlash <- symbol2 state '<' '/' |> Result.try
+
+    (endName, afterEndName) = chompWhile afterEndSlash isName
+    afterEndNameSpaces = ignoreSpaces afterEndName
+
+    afterEndGt <- symbol afterEndNameSpaces '>' |> Result.map
+    (endName, afterEndGt)
 
 parseAttribute : State -> Result (Attribute, State) _
 parseAttribute = \state ->
@@ -121,18 +130,20 @@ parseDocType = \state ->
     |> Result.try \afterHtml -> symbol afterHtml '>'
     |> Result.map \afterGt -> (DoctypeHtml, afterGt)
 
-
-isName : U8 -> Bool
-isName = \byte -> isAsciiAlpha byte || byte == '-' || byte == '_' || byte == '.'
-
 isBlank : U8 -> Bool
 isBlank = \byte -> byte == ' ' || byte == '\t' || isNewLine byte
 
 isNewLine : U8 -> Bool
 isNewLine = \byte -> byte == '\n'
 
+isName : U8 -> Bool
+isName = \byte -> isAsciiAlpha byte || isAsciiDigit byte || byte == '-' || byte == '_' || byte == '.'
+
 isAsciiAlpha : U8 -> Bool
 isAsciiAlpha = \byte -> (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+
+isAsciiDigit : U8 -> Bool
+isAsciiDigit = \byte -> byte >= '0' && byte <= '9'
 
 toLowerAsciiByte : U8 -> U8
 toLowerAsciiByte = \byte ->
@@ -146,13 +157,13 @@ expect toLowerAsciiByte 'Z' == 'z'
 expect toLowerAsciiByte 'a' == 'a'
 expect toLowerAsciiByte 'z' == 'z'
 
-
 # Parse Tests
 
 # Tags
 expect parse "<p></p>" == Ok [Element "p" [] []]
 expect parse "<p ></p>" == Ok [Element "p" [] []]
 expect parse "<p></p >" == Ok [Element "p" [] []]
+expect parse "<h1></h1>" == Ok [Element "h1" [] []]
 
 # Attributes
 expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
@@ -182,7 +193,6 @@ expect parse "<!DOCTYPE  html>" == Ok [DoctypeHtml]
 expect parse "<! DOCTYPE html>" == Err (ExpectedWord ['d', 'o', 'c', 't', 'y', 'p', 'e'] ' ')
 expect parse "<!DOCTYPE xml>" == Err (ExpectedWord ['h', 't', 'm', 'l'] 'x')
 expect parse "<!doctypehtml>" == Err ExpectedSpace
-
 
 # Parsing helpers
 
