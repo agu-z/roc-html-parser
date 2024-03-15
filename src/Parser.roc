@@ -1,21 +1,8 @@
-interface HtmlParser exposes [parse] imports []
+interface Parser
+    exposes [parse]
+    imports [Html.{ Node, Attribute }]
 
-Node : [
-    DoctypeHtml,
-    Element Str (List Attribute) (List Node),
-    Comment Str,
-    Text Str,
-]
-
-# TODO: Add locations
-
-Attribute : (Str, Str)
-
-State : {
-    input : List U8,
-    line : U32,
-    column : U32,
-}
+# Reference: https://html.spec.whatwg.org/multipage/syntax.html
 
 parse : Str -> Result (List Node) _
 parse = \input ->
@@ -56,14 +43,14 @@ parseNonText = \afterLt ->
         # TODO: content
         (content, afterContent) = ([], afterGt)
 
-        afterCloseSlash <- symbol2 afterContent '<' '/' |> Result.try
-        (closingName, afterClosingName) = chompWhile afterCloseSlash isName
-        afterCloseGt <- symbol afterClosingName '>' |> Result.try
+        afterEndSlash <- symbol2 afterContent '<' '/' |> Result.try
+        (endName, afterEndName) = chompWhile afterEndSlash isName
+        afterEndGt <- symbol afterEndName '>' |> Result.try
 
-        if name == closingName then
-            Ok (Element name attributes content, afterCloseGt)
+        if name == endName then
+            Ok (Element name attributes content, afterEndGt)
         else
-            Err (MismatchedTag name closingName)
+            Err (MismatchedTag name endName)
 
 parseAttribute : State -> Result (Attribute, State) _
 parseAttribute = \state ->
@@ -123,16 +110,108 @@ parseComment = \afterOpen ->
 
     next afterOpen (List.withCapacity 128)
 
+# https://html.spec.whatwg.org/multipage/syntax.html#the-doctype
 parseDocType : State -> Result (Node, State) _
 parseDocType = \state ->
-    word state ['d', 'o', 'c', 't', 'y', 'p', 'e'] 
+    word state ['d', 'o', 'c', 't', 'y', 'p', 'e']
     |> Result.try oneOrMoreSpaces
-    |> Result.try \afterDoctype -> word afterDoctype ['h', 't', 'm', 'l'] 
+    |> Result.try \afterDoctype -> word afterDoctype ['h', 't', 'm', 'l']
     |> Result.map ignoreSpaces
-    |> Result.try \afterHtml -> symbol afterHtml '>' 
+    |> Result.try \afterHtml -> symbol afterHtml '>'
     |> Result.map \afterGt -> (DoctypeHtml, afterGt)
 
-# Helpers
+
+isName : U8 -> Bool
+isName = \byte -> isAsciiAlpha byte || byte == '-' || byte == '_' || byte == '.'
+
+isBlank : U8 -> Bool
+isBlank = \byte -> byte == ' ' || byte == '\t' || isNewLine byte
+
+isNewLine : U8 -> Bool
+isNewLine = \byte -> byte == '\n'
+
+isAsciiAlpha : U8 -> Bool
+isAsciiAlpha = \byte -> (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+
+toLowerAsciiByte : U8 -> U8
+toLowerAsciiByte = \byte ->
+    if byte >= 'A' && byte <= 'Z' then
+        byte + 32
+    else
+        byte
+
+expect toLowerAsciiByte 'A' == 'a'
+expect toLowerAsciiByte 'Z' == 'z'
+expect toLowerAsciiByte 'a' == 'a'
+expect toLowerAsciiByte 'z' == 'z'
+
+
+# Parse Tests
+
+# Tags
+expect parse "<p></p>" == Ok [Element "p" [] []]
+expect parse "<p ></p>" == Ok [Element "p" [] []]
+
+# Attributes
+expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
+expect parse "<p id = \"name\"  class= \"name\"></p>" == Ok [Element "p" [("id", "name"), ("class", "name")] []]
+expect parse "<p id=name></p>" == Ok [Element "p" [("id", "name")] []]
+expect parse "<button disabled></button>" == Ok [Element "button" [("disabled", "")] []]
+
+# Mismatched tags
+expect parse "<p></ul>" == Err (MismatchedTag "p" "ul")
+expect parse "<input" == Err (EndedButExpected '>')
+expect parse "<p>" == Err (EndedButExpected '<')
+
+# Comments
+expect parse "<!---->" == Ok [Comment ""]
+expect parse "<!-- comment -->" == Ok [Comment " comment "]
+expect parse "<!-- 8 > 5 -->" == Ok [Comment " 8 > 5 "]
+expect parse "<!-- - - > -->" == Ok [Comment " - - > "]
+expect parse "<!-- -- > -->" == Ok [Comment " -- > "]
+expect parse "<!-- before -- after -->" == Ok [Comment " before -- after "]
+
+# Doctype
+expect parse "<!doctype html>" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE html>" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE HTML>" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE html >" == Ok [DoctypeHtml]
+expect parse "<!DOCTYPE  html>" == Ok [DoctypeHtml]
+expect parse "<! DOCTYPE html>" == Err (ExpectedWord ['d', 'o', 'c', 't', 'y', 'p', 'e'] ' ')
+expect parse "<!DOCTYPE xml>" == Err (ExpectedWord ['h', 't', 'm', 'l'] 'x')
+expect parse "<!doctypehtml>" == Err ExpectedSpace
+
+
+# Parsing helpers
+
+State : {
+    input : List U8,
+    line : U32,
+    column : U32,
+}
+
+nextByte : State -> [Next (U8, State), End]
+nextByte = \state ->
+    when state.input is
+        [] ->
+            End
+
+        [byte, .. as rest] ->
+            newState =
+                if byte == '\n' then
+                    {
+                        input: rest,
+                        line: state.line + 1,
+                        column: 1,
+                    }
+                else
+                    {
+                        input: rest,
+                        line: state.line,
+                        column: state.column + 1,
+                    }
+
+            Next (byte, newState)
 
 word : State, List U8 -> Result State _
 word = \initState, expected ->
@@ -143,7 +222,7 @@ word = \initState, expected ->
 
             [head, .. as rest] ->
                 when nextByte state is
-                    Next (curr, newState) -> 
+                    Next (curr, newState) ->
                         if toLowerAsciiByte curr == toLowerAsciiByte head then
                             next newState rest
                         else
@@ -184,7 +263,6 @@ zeroOrMore = \initState, parser ->
     # TODO: What is a good initial capacity?
     next initState (List.withCapacity 4)
 
-
 ignoreSpaces : State -> State
 ignoreSpaces = \state ->
     when nextByte state is
@@ -217,86 +295,3 @@ chompWhile = \initState, predicate ->
                 )
 
     next initState []
-
-nextByte : State -> [Next (U8, State), End]
-nextByte = \state ->
-    when state.input is
-        [] ->
-            End
-
-        [byte, .. as rest] ->
-            newState =
-                if byte == '\n' then
-                    {
-                        input: rest,
-                        line: state.line + 1,
-                        column: 1,
-                    }
-                else
-                    {
-                        input: rest,
-                        line: state.line,
-                        column: state.column + 1,
-                    }
-
-            Next (byte, newState)
-
-isName : U8 -> Bool
-isName = \byte -> isAsciiAlpha byte || byte == '-' || byte == '_' || byte == '.'
-
-isBlank : U8 -> Bool
-isBlank = \byte -> byte == ' ' || byte == '\t' || isNewLine byte
-
-isNewLine : U8 -> Bool
-isNewLine = \byte -> byte == '\n'
-
-isAsciiAlpha : U8 -> Bool
-isAsciiAlpha = \byte -> (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
-
-toLowerAsciiByte : U8 -> U8
-toLowerAsciiByte = \byte ->
-    if byte >= 'A' && byte <= 'Z' then
-        byte + 32
-    else
-        byte
-
-expect toLowerAsciiByte 'A' == 'a'
-expect toLowerAsciiByte 'Z' == 'z'
-expect toLowerAsciiByte 'a' == 'a'
-expect toLowerAsciiByte 'z' == 'z'
-
-# Parse Tests
-
-# Tags
-expect parse "<p></p>" == Ok [Element "p" [] []]
-expect parse "<p ></p>" == Ok [Element "p" [] []]
-
-# Attributes
-expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
-expect parse "<p id = \"name\"  class= \"name\"></p>" == Ok [Element "p" [("id", "name"), ("class", "name")] []]
-expect parse "<p id=name></p>" == Ok [Element "p" [("id", "name")] []]
-expect parse "<button disabled></button>" == Ok [Element "button" [("disabled", "")] []]
-
-# Mismatched tags
-expect parse "<p></ul>" == Err (MismatchedTag "p" "ul")
-expect parse "<input" == Err (EndedButExpected '>')
-expect parse "<p>" == Err (EndedButExpected '<')
-
-# Comments
-expect parse "<!---->" == Ok [Comment ""]
-expect parse "<!-- comment -->" == Ok [Comment " comment "]
-expect parse "<!-- 8 > 5 -->" == Ok [Comment " 8 > 5 "]
-expect parse "<!-- - - > -->" == Ok [Comment " - - > "]
-expect parse "<!-- -- > -->" == Ok [Comment " -- > "]
-expect parse "<!-- before -- after -->" == Ok [Comment " before -- after "]
-
-
-# Doctype
-expect parse "<!doctype html>" == Ok [DoctypeHtml]
-expect parse "<!DOCTYPE html>" == Ok [DoctypeHtml]
-expect parse "<!DOCTYPE HTML>" == Ok [DoctypeHtml]
-expect parse "<!DOCTYPE html >" == Ok [DoctypeHtml]
-expect parse "<!DOCTYPE  html>" == Ok [DoctypeHtml]
-expect parse "<! DOCTYPE html>" == Err (ExpectedWord ['d', 'o', 'c', 't', 'y', 'p', 'e'] ' ')
-expect parse "<!DOCTYPE xml>" == Err (ExpectedWord ['h', 't', 'm', 'l'] 'x')
-expect parse "<!doctypehtml>" == Err ExpectedSpace
