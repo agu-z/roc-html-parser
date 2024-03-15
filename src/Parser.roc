@@ -45,7 +45,8 @@ parseNonText = \afterLt ->
 
         afterEndSlash <- symbol2 afterContent '<' '/' |> Result.try
         (endName, afterEndName) = chompWhile afterEndSlash isName
-        afterEndGt <- symbol afterEndName '>' |> Result.try
+        afterEndNameSpaces = ignoreSpaces afterEndName
+        afterEndGt <- symbol afterEndNameSpaces '>' |> Result.try
 
         if name == endName then
             Ok (Element name attributes content, afterEndGt)
@@ -151,6 +152,7 @@ expect toLowerAsciiByte 'z' == 'z'
 # Tags
 expect parse "<p></p>" == Ok [Element "p" [] []]
 expect parse "<p ></p>" == Ok [Element "p" [] []]
+expect parse "<p></p >" == Ok [Element "p" [] []]
 
 # Attributes
 expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
