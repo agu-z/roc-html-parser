@@ -36,20 +36,68 @@ parseNonText = \afterLt ->
         # 13.1.2.1 Start tags
         (attributes, afterAttributes) = spaceSeparated afterName parseAttribute
 
+        afterAttributeSpaces = ignoreSpaces afterAttributes
+
+        void = isVoidElement name
+
+        selfClosingResult =
+            when symbol afterAttributeSpaces '/' is
+                Ok afterSlash if void ->
+                    Ok afterSlash
+
+                Ok _ ->
+                    Err (SelfClosingNonVoidElement name)
+
+                Err _ ->
+                    Ok afterAttributeSpaces
+
+        afterSlash <- Result.try selfClosingResult
+
         afterGt <-
-            ignoreSpaces afterAttributes
+            ignoreSpaces afterSlash
             |> symbol '>'
             |> Result.try
 
         # TODO: content
         (content, afterContent) = ([], afterGt)
 
-        (endName, afterEnd) <- parseEndTag afterContent |> Result.try
+        when parseEndTag afterContent is
+            Ok (endName, afterEnd) if endName == name ->
+                if void then
+                    Err (VoidElementWithEndTag name)
+                else
+                    Ok (Element name attributes content, afterEnd)
 
-        if name == endName then
-            Ok (Element name attributes content, afterEnd)
-        else
-            Err (MismatchedTag name endName)
+            Ok (endName, _) ->
+                Err (MismatchedTag name endName)
+
+            Err _ if void ->
+                Ok (Element name attributes content, afterContent)
+
+            Err _ ->
+                Err (ExpectedEndTag name)
+
+isVoidElement : Str -> Bool
+isVoidElement = \name ->
+    # https://html.spec.whatwg.org/multipage/syntax.html#void-elements
+    when name is
+        "area"
+        | "base"
+        | "br"
+        | "col"
+        | "embed"
+        | "hr"
+        | "img"
+        | "input"
+        | "link"
+        | "meta"
+        | "source"
+        | "track"
+        | "wbr" ->
+            Bool.true
+
+        _ ->
+            Bool.false
 
 # 13.1.2.2 End Tags
 parseEndTag : State -> Result (Str, State) _
@@ -164,6 +212,10 @@ expect parse "<p></p>" == Ok [Element "p" [] []]
 expect parse "<p ></p>" == Ok [Element "p" [] []]
 expect parse "<p></p >" == Ok [Element "p" [] []]
 expect parse "<h1></h1>" == Ok [Element "h1" [] []]
+expect parse "<img src=\"image.png\">" == Ok [Element "img" [("src", "image.png")] []]
+expect parse "<img src=\"image.png\" />" == Ok [Element "img" [("src", "image.png")] []]
+expect parse "<img src=\"image.png\"></img>" == Err (VoidElementWithEndTag "img")
+expect parse "<div />" == Err (SelfClosingNonVoidElement "div")
 
 # Attributes
 expect parse "<p id=\"name\"></p>" == Ok [Element "p" [("id", "name")] []]
@@ -176,7 +228,7 @@ expect parse "<p id=\"name\"class=\"name\">" == Err (Expected '>' 'c')
 # Mismatched tags
 expect parse "<p></ul>" == Err (MismatchedTag "p" "ul")
 expect parse "<input" == Err (EndedButExpected '>')
-expect parse "<p>" == Err (EndedButExpected '<')
+expect parse "<p>" == Err (ExpectedEndTag "p")
 
 # Comments
 expect parse "<!---->" == Ok [Comment ""]
